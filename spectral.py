@@ -2,11 +2,12 @@ import numpy as np
 import scipy.sparse as sp
 from sklearn.cluster import SpectralClustering
 from sklearn.utils import check_random_state, as_float_array
+from sklearn.metrics import accuracy_score, f1_score, normalized_mutual_info_score, adjusted_rand_score
+import time
+import psutil
+from config import labels  # Ground truth labels used for evaluation
 
 
-# ===================================
-# Previous Code (Retained)
-# ===================================
 def discretize(vectors, copy=True, max_svd_restarts=3, n_iter_max=50, random_state=None):
     """
     Converts continuous spectral embeddings into discrete clustering assignments using an iterative 
@@ -76,28 +77,27 @@ def discretize(vectors, copy=True, max_svd_restarts=3, n_iter_max=50, random_sta
     return max_label, vectors_f
 
 
-# ===================================
-# HNCut (Hypergraph Normalized Cut) Implementation
-# ===================================
-
 def compute_hypergraph_laplacian(hg_adj):
     """
     Computes the Hypergraph Laplacian for spectral clustering.
-
-    Parameters:
-    - hg_adj: Hypergraph adjacency matrix (sparse)
-
-    Returns:
-    - L: Hypergraph Laplacian matrix
+    Handles isolated nodes/hyperedges safely.
     """
-    D_v = np.diag(hg_adj.sum(axis=1).A1)  # Convert to diagonal matrix
-    D_e = np.diag(hg_adj.sum(axis=0).A1)  # Convert to diagonal matrix
+    # Compute degree vectors
+    dv = np.array(hg_adj.sum(axis=1)).flatten()
+    de = np.array(hg_adj.sum(axis=0)).flatten()
 
-    # Ensure D_e is invertible by replacing zeros with a small value
-    D_e_inv = np.linalg.pinv(D_e)  # Use pseudo-inverse instead of inverse
+    # Add epsilon to avoid division by zero
+    dv[dv == 0] = 1e-8
+    de[de == 0] = 1e-8
 
-    L = D_v - hg_adj @ D_e_inv @ hg_adj.T  # Hypergraph Laplacian
+    # Construct diagonal matrices
+    D_v = np.diag(dv)
+    D_e_inv = np.diag(1.0 / de)
+
+    # Compute Laplacian
+    L = D_v - hg_adj @ D_e_inv @ hg_adj.T
     return L
+
 
 
 def spectral_clustering(hg_adj, k_clusters=6):
@@ -109,12 +109,31 @@ def spectral_clustering(hg_adj, k_clusters=6):
     - k_clusters: Number of clusters
 
     Returns:
-    - cluster_assignments: Cluster labels for each node
+    - acc, nmi, f1, ari, runtime, memory_usage
     """
+    start_time = time.time()
+    process = psutil.Process()
+
+    # Compute Laplacian
     L = compute_hypergraph_laplacian(hg_adj)
 
-    # Apply spectral clustering
+    # Spectral Clustering
     spectral = SpectralClustering(n_clusters=k_clusters, affinity="precomputed", assign_labels="kmeans")
     cluster_assignments = spectral.fit_predict(L)
 
-    return cluster_assignments
+    end_time = time.time()
+    runtime = end_time - start_time
+    memory_usage = process.memory_info().rss / (1024 * 1024)  # MB
+
+    # Evaluate metrics
+    y_true = np.array(labels)
+    try:
+        acc = accuracy_score(y_true, cluster_assignments)
+    except:
+        acc = 0.0
+
+    f1 = f1_score(y_true, cluster_assignments, average='macro')
+    nmi = normalized_mutual_info_score(y_true, cluster_assignments)
+    ari = adjusted_rand_score(y_true, cluster_assignments)
+
+    return acc, nmi, f1, ari, runtime, memory_usage
