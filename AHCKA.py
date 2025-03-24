@@ -1,18 +1,19 @@
 import config
 import numpy as np
 import scipy.sparse as sp
-from sklearn.preprocessing import normalize
 from data import data
 import argparse
 import random
 import pandas as pd
 import subprocess
 from cluster import cluster
+from spectral import spectral_clustering  # Import HNCut function
+import os
 
 # Argument Parser
 p = argparse.ArgumentParser(description='Set parameter')
-p.add_argument('--data', type=str, default='coauthorship', help='Data type (coauthorship/cocitation)')
-p.add_argument('--dataset', type=str, default='cora', help='Dataset name (e.g., cora/dblp for coauthorship, cora/citeseer for cocitation)')
+p.add_argument('--data', type=str, default='coauthorship', help='Data type (coauthorship/cocitation/npz)')
+p.add_argument('--dataset', type=str, default='cora', help='Dataset name (e.g., cora/dblp/citeseer/20news)')
 p.add_argument('--tmax', type=int, default=200, help='t_max parameter')
 p.add_argument('--seeds', type=int, default=0, help='Seed for randomness')
 p.add_argument('--alpha', type=float, default=0.2, help='MHC parameter')
@@ -55,7 +56,7 @@ def run_clustering(k_value=None):
     if args.method == 'knn':
         results = cluster(hg_adj, features, k, deg_dict, alpha=config.alpha, beta=config.beta, tmax=config.tmax)
     elif args.method == 'hncut':
-        results = cluster(hg_adj, features, k, deg_dict, method='hncut')
+        results = spectral_clustering(hg_adj, k)  # Call spectral clustering
 
     return results
 
@@ -76,25 +77,31 @@ if __name__ == '__main__':
         config.approx_knn = True
         config.init_iter = 1
 
-    # If sensitivity analysis flag is passed, run for multiple k values
+    # Run sensitivity analysis if flag is enabled
     if args.sensitivity:
-        k_values = [2, 5, 10, 20, 50, 100, 200, 500, 1000]
+        dataset_obj = data.load(config.data, config.dataset)
+        n_nodes = dataset_obj['features_sp'].shape[0]
+
+        base_k_values = [2, 5, 10, 20, 50, 100, 200, 500, 1000]
+        k_values = [k for k in base_k_values if k < n_nodes]
+
         results = []
 
         for k in k_values:
-            print(f"\nRunning AHCKA with k = {k}...")
+            print(f"\nRunning AHCKA on {args.dataset} with k = {k}...")
             result = run_clustering(k_value=k)
 
-            # Extract accuracy, NMI, ARI, runtime from results
             if result:
                 acc, nmi, f1, ari, runtime, memory = result
+                print(f"Acc={acc:.3f} F1={f1:.3f} NMI={nmi:.3f} ARI={ari:.3f} Time={runtime:.3f}s RAM={memory}MB")
                 results.append([k, acc, f1, nmi, ari, runtime, memory])
-        
-        # Save results to CSV
-        df = pd.DataFrame(results, columns=["k", "Accuracy", "F1-score", "NMI", "ARI", "Runtime", "Memory (MB)"])
-        df.to_csv("sensitivity_k_results.csv", index=False)
 
-        print("\nSensitivity analysis complete. Results saved to 'sensitivity_k_results.csv'.")
+        df = pd.DataFrame(results, columns=["k", "Accuracy", "F1-score", "NMI", "ARI", "Runtime", "Memory (MB)"])
+        output_path = f"sensitivity_k_results_{args.data}_{args.dataset}.csv"
+        df.to_csv(output_path, index=False)
+
+        print(f"\n✅ Sensitivity analysis complete. Results saved to '{output_path}'.")
+
     else:
-        # Run normally with selected method
+        # Run normally with selected method (AHCKA or HNCut)
         run_clustering()
