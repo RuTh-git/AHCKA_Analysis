@@ -14,3 +14,14 @@ CITATIONS:
   pages        = {116:1--116:23},
   year         = {2023}
 }
+
+# HNCUT Commands:
+For converting the dataset to HNCut Compatible dataset, use the below command:
+python convert_to_hncut.py --input_root data --output_root hncut_data --subdir npz/20news
+
+To run the Hncut on the converted dataset, use the below command:
+python hncut.py --data hncut_data --dataset npz/20news
+
+# AHCKA Commands:
+To run AHCKA on the dataset, use the below command:
+python ahcka.py --data coauthorship --dataset cora
