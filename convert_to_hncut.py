@@ -1,71 +1,76 @@
+import os
 import pickle
 import numpy as np
-from scipy.sparse import lil_matrix
-import os
+import scipy.sparse as sp
+import argparse
 
+def remove_singleton_hyperedges(hg_adj):
+    degrees = hg_adj.sum(axis=0).A1
+    valid_edges = np.where(degrees > 1)[0]
+    return hg_adj[:, valid_edges], valid_edges, len(degrees) - len(valid_edges)
 
-def convert_hypergraph_to_hncut(input_root, output_root, subdir, suffix="_hncut"):
+def convert_to_hncut(input_root, output_root, subdir):
     data_dir = os.path.join(input_root, subdir)
-    out_dir = os.path.join(output_root, subdir)
-    os.makedirs(out_dir, exist_ok=True)
+    output_dir = os.path.join(output_root, subdir)
+    os.makedirs(output_dir, exist_ok=True)
 
-    # === Load data ===
-    with open(os.path.join(data_dir, "hypergraph.pickle"), "rb") as f:
-        hg_dict = pickle.load(f)
-    with open(os.path.join(data_dir, "features.pickle"), "rb") as f:
-        features = pickle.load(f)
-    with open(os.path.join(data_dir, "labels.pickle"), "rb") as f:
-        labels = pickle.load(f)
+    print(f"\n📦 Converting: {subdir}")
 
-    # === Build mappings ===
-    author_ids = list(hg_dict.keys())
-    paper_ids = set(p for papers in hg_dict.values() for p in papers)
+    npz_mode = os.path.exists(os.path.join(data_dir, "hypergraph.npz"))
 
-    author_to_idx = {author: i for i, author in enumerate(author_ids)}
-    paper_to_idx = {paper: i for i, paper in enumerate(sorted(paper_ids))}
+    if npz_mode:
+        hg = sp.load_npz(os.path.join(data_dir, "hypergraph.npz")).T  # Transpose here
+        features = sp.load_npz(os.path.join(data_dir, "features.npz"))
+        labels = np.load(os.path.join(data_dir, "labels.npy"))
 
-    num_authors = len(author_ids)
-    num_papers = len(paper_to_idx)
+        if hg.shape[0] != features.shape[0]:
+            raise ValueError(f"Mismatch: hypergraph.shape[0]={hg.shape[0]} != features.shape[0]={features.shape[0]}")
+    else:
+        with open(os.path.join(data_dir, "hypergraph.pickle"), "rb") as f:
+            hypergraph = pickle.load(f)
+        with open(os.path.join(data_dir, "features.pickle"), "rb") as f:
+            features = pickle.load(f)
+        with open(os.path.join(data_dir, "labels.pickle"), "rb") as f:
+            labels = pickle.load(f)
 
-    # === Construct incidence matrix ===
-    H = lil_matrix((num_authors, num_papers), dtype=int)
-    for author, papers in hg_dict.items():
-        a_idx = author_to_idx[author]
-        for paper in papers:
-            p_idx = paper_to_idx[paper]
-            H[a_idx, p_idx] = 1
+        n_nodes = features.shape[0]
+        n_edges = len(hypergraph)
+        rows, cols = [], []
+        for j, edge in enumerate(hypergraph.values()):
+            rows.extend(edge)
+            cols.extend([j] * len(edge))
+        data = np.ones(len(rows))
+        hg = sp.csr_matrix((data, (rows, cols)), shape=(n_nodes, n_edges))
 
-    # === Remove singleton hyperedges and isolated nodes ===
-    row_sums = np.array(H.sum(axis=1)).flatten()
-    col_sums = np.array(H.sum(axis=0)).flatten()
+    print(f"🔍 Original shape: {hg.shape}")
 
-    valid_nodes = np.where(row_sums > 0)[0]
-    valid_edges = np.where(col_sums > 1)[0]
+    hg_cleaned, valid_edges, removed = remove_singleton_hyperedges(hg)
+    valid_nodes = np.where(hg_cleaned.sum(axis=1).A1 > 0)[0]
+    hg_cleaned = hg_cleaned[valid_nodes, :]
 
-    H_cleaned = H[valid_nodes, :][:, valid_edges].tocsr()
-    features_cleaned = features[valid_nodes]
-    labels_cleaned = np.array(labels)[valid_nodes]  # 🩹 Fix applied here
+    print(f"✅ Cleaned shape (after edge filtering): {hg_cleaned.shape}")
+    print(f"❌ Removed {removed} singleton hyperedges")
+    print(f"✔️ Retained {hg_cleaned.shape[0]} active nodes")
 
-    # === Save cleaned data ===
-    with open(os.path.join(out_dir, f"hypergraph{suffix}.pickle"), "wb") as f:
-        pickle.dump(H_cleaned, f)
-    with open(os.path.join(out_dir, f"features{suffix}.pickle"), "wb") as f:
-        pickle.dump(features_cleaned, f)
-    with open(os.path.join(out_dir, f"labels{suffix}.pickle"), "wb") as f:
-        pickle.dump(labels_cleaned, f)
+    if npz_mode:
+        sp.save_npz(os.path.join(output_dir, "hypergraph_hncut.npz"), hg_cleaned)
+        sp.save_npz(os.path.join(output_dir, "features_hncut.npz"), features[valid_nodes])
+        np.save(os.path.join(output_dir, "labels_hncut.npy"), labels[valid_nodes])
+    else:
+        with open(os.path.join(output_dir, "hypergraph_hncut.pickle"), "wb") as f:
+            pickle.dump(hg_cleaned, f)
+        with open(os.path.join(output_dir, "features_hncut.pickle"), "wb") as f:
+            pickle.dump(features[valid_nodes], f)
+        with open(os.path.join(output_dir, "labels_hncut.pickle"), "wb") as f:
+            pickle.dump(labels[valid_nodes], f)
 
-    print(f"\n✅ Saved cleaned hypergraph to: {out_dir}")
-    print(f"Original shape: {H.shape}, Cleaned shape: {H_cleaned.shape}")
-    print(f"Removed {len(col_sums) - len(valid_edges)} singleton hyperedges")
-    print(f"Retained {len(valid_nodes)} active nodes")
-
+    print(f"✅ Saved cleaned HNCut-compatible data to: {output_dir}")
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Convert hypergraph to HNCut-compatible format and save to hncut_data/")
-    parser.add_argument("--input_root", type=str, default="data", help="Root input data folder")
-    parser.add_argument("--output_root", type=str, default="hncut_data", help="Root output folder")
-    parser.add_argument("--subdir", type=str, default="coauthorship/cora", help="Sub-directory path inside root")
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="Convert dataset to HNCut-compatible format.")
+    parser.add_argument("--input_root", type=str, default="data", help="Root folder of datasets")
+    parser.add_argument("--output_root", type=str, default="hncut_data", help="Root to save converted files")
+    parser.add_argument("--subdir", type=str, required=True, help="Sub-directory inside input_root")
 
-    convert_hypergraph_to_hncut(args.input_root, args.output_root, args.subdir)
+    args = parser.parse_args()
+    convert_to_hncut(args.input_root, args.output_root, args.subdir)
