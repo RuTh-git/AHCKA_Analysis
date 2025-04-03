@@ -33,3 +33,7 @@ To run AHCKA on the dataset, use the below command:
 ```
 python ahcka.py --data coauthorship --dataset cora
 ```
+# Sensitivity of AHCKA:
+```
+python AHCKA.py --data coauthorship --dataset dblp --sensitivity
+```
